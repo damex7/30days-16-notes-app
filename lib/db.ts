@@ -6,7 +6,7 @@
 // bundled into JavaScript sent to the browser.
 import 'server-only'
 
-import { neon, neonConfig, Pool, type NeonQueryFunction, type NeonQueryFunctionInTransaction, type NeonQueryInTransaction, type PoolClient } from '@neondatabase/serverless'
+import { neon, type NeonQueryFunction, type NeonQueryFunctionInTransaction, type NeonQueryInTransaction } from '@neondatabase/serverless'
 
 /*
   WHY THE POOLED CONNECTION STRING (the host with "-pooler" in it)?
@@ -30,15 +30,17 @@ function connectionString(): string {
   return url
 }
 
-// ---------------------------------------------------------------------------
-// One-shot queries over HTTP
-// ---------------------------------------------------------------------------
-
 let http: NeonQueryFunction<false, false> | null = null
+
+/** Created on first use, so a missing DATABASE_URL fails one request (caught by an error boundary), not the build. */
+function client(): NeonQueryFunction<false, false> {
+  http ??= neon(connectionString())
+  return http
+}
 
 /**
  * Runs ONE query as an HTTPS request: no connection to open or close, which
- * makes it the fastest choice for a serverless function's single read.
+ * makes it the fastest choice for a serverless function.
  *
  * It is a TAGGED TEMPLATE. In sql`SELECT * FROM notes WHERE id = ${id}`, the
  * driver never pastes `id` into the SQL text. It sends the text with a
@@ -48,85 +50,33 @@ let http: NeonQueryFunction<false, false> | null = null
  *
  * Fragments compose: sql`... ${tag ? sql`AND t.name = ${tag}` : sql``}` is
  * still fully parameterised.
- *
- * The client is created on first use rather than when the module loads, so
- * a missing DATABASE_URL fails the request that needed it (caught by an
- * error boundary), not the whole build.
  */
 export function sql(strings: TemplateStringsArray, ...values: unknown[]) {
-  http ??= neon(connectionString())
-  return http(strings, ...values)
+  return client()(strings, ...values)
 }
 
 /**
  * The same HTTPS query, written with $1-style placeholders and a separate
- * values array. lib/notes.ts uses it for SQL text that is shared with the
- * interactive transactions below (which only accept this style).
+ * values array: the other parameterised style. lib/notes.ts uses it for SQL
+ * text kept in a constant.
  */
 export function sqlQuery(text: string, values: unknown[]) {
-  http ??= neon(connectionString())
-  return http.query(text, values)
+  return client().query(text, values)
 }
 
 /**
- * Several statements in ONE non-interactive transaction, sent as a single
- * HTTPS request: all of them commit, or none do. Use it when no statement
- * needs to look at an earlier statement's result (deleting notes and then
- * their orphaned tags, for example).
+ * Several statements in ONE TRANSACTION, sent as a single HTTPS request: all
+ * of them commit, or (if any fails) none do.
+ *
+ * Why not BEGIN ... COMMIT over a WebSocket session, the "interactive"
+ * transaction that scripts/migrate.mts uses? There, every statement is its
+ * own round trip, plus the time to open the connection. Measured from
+ * Nigeria to Neon in Frankfurt: about 250 ms per round trip, so a
+ * step-by-step save took about 2.5 seconds. Here the whole transaction is
+ * one round trip. The price: JavaScript can't look at one statement's result
+ * before sending the next, so decisions like "did the version match?" are
+ * made in SQL instead (see saveNote in lib/notes.ts).
  */
 export function sqlTransaction(build: (tx: NeonQueryFunctionInTransaction<false, false>) => NeonQueryInTransaction[]) {
-  http ??= neon(connectionString())
-  return http.transaction(build)
-}
-
-// ---------------------------------------------------------------------------
-// Interactive transactions over a WebSocket
-// ---------------------------------------------------------------------------
-
-// Node 22+ has a WebSocket built in, which Pool uses to hold a real session.
-neonConfig.webSocketConstructor = WebSocket
-
-export type Tx = PoolClient
-
-/**
- * An INTERACTIVE TRANSACTION: BEGIN, then queries whose results decide what
- * happens next, then COMMIT, or ROLLBACK if anything throws. Saving a note
- * needs this: if the version check finds no row, we must stop before
- * touching its tags.
- *
- * Inside `work`, queries use $1-style placeholders with a separate values
- * array, e.g. tx.query('... WHERE id = $1', [id]). Same safety as the tagged
- * template: values travel apart from the SQL.
- *
- * `rollback(value)` undoes everything and makes withTransaction return
- * `value`: for outcomes like a version conflict, which are not errors.
- *
- * Neon's advice for serverless: create the Pool, use it and close it inside
- * the same request. A Pool kept in a module variable would outlive the
- * request that opened its WebSocket.
- */
-export async function withTransaction<T>(work: (tx: Tx, rollback: (value: T) => never) => Promise<T>): Promise<T> {
-  const pool = new Pool({ connectionString: connectionString() })
-  const client = await pool.connect()
-  try {
-    await client.query('BEGIN')
-    try {
-      const value = await work(client, (v) => {
-        throw new Rollback(v)
-      })
-      await client.query('COMMIT')
-      return value
-    } catch (error) {
-      await client.query('ROLLBACK')
-      if (error instanceof Rollback) return error.value as T
-      throw error
-    }
-  } finally {
-    client.release()
-    await pool.end()
-  }
-}
-
-class Rollback {
-  constructor(readonly value: unknown) {}
+  return client().transaction(build)
 }

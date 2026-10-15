@@ -16,7 +16,7 @@ import { cacheLife, cacheTag } from 'next/cache'
 import { z } from 'zod'
 import { cacheTags } from '@/lib/cache-tags'
 import { decodeCursor, encodeCursor } from '@/lib/cursor'
-import { sql, sqlQuery, sqlTransaction, withTransaction, type Tx } from '@/lib/db'
+import { sql, sqlQuery, sqlTransaction } from '@/lib/db'
 import {
   MARK_END,
   MARK_START,
@@ -261,11 +261,6 @@ export async function getNote(ownerId: string, id: string): Promise<Note | null>
   return parseRows(NoteSchema, rows, 'getNote')[0] ?? null
 }
 
-async function getNoteInTransaction(tx: Tx, ownerId: string, id: string): Promise<Note | null> {
-  const { rows } = await tx.query(NOTE_BY_ID, [id, ownerId])
-  return parseRows(NoteSchema, rows, 'getNote (in transaction)')[0] ?? null
-}
-
 // ---------------------------------------------------------------------------
 // Writes (never cached; the Server Actions expire the affected cache tags)
 // ---------------------------------------------------------------------------
@@ -287,73 +282,109 @@ export type SaveOutcome =
   /** The note was deleted or moved to the trash meanwhile. */
   | { status: 'gone' }
 
-const SavedRowSchema = z.object({ version: z.number().int(), updatedAt: z.date(), archived: z.boolean() })
+const SavedRowSchema = z.object({
+  version: z.number().int(),
+  updatedAt: z.date(),
+  archived: z.boolean(),
+  tagLinksChanged: z.number().int(),
+})
 
 /**
  * Saves a note's title, body and tags in ONE TRANSACTION.
  *
- * Without a transaction, each statement below would be committed on its
- * own. If the connection dropped (or a constraint failed) halfway, the note
- * could be saved with only some of its tags, or keep a tag link that was
- * meant to go, and nothing would put it right. Inside BEGIN ... COMMIT,
- * other requests see either the old note with its old tags or the new note
- * with its new tags, never a mix, and any error rolls everything back.
+ * WHY A TRANSACTION. Saving is several changes: the note row, new tags, tag
+ * links removed, tag links added, unused tags deleted. Without a
+ * transaction each would be committed on its own. If the connection dropped
+ * or a constraint failed halfway, the note could end up saved with only
+ * some of its tags, or keep a link that was meant to go, and nothing would
+ * put it right. Inside a transaction, everyone else sees either the old
+ * note with its old tags or the new note with its new tags, never a mix,
+ * and any error undoes all of it.
  *
  * OPTIMISTIC CONCURRENCY. The UPDATE only matches if the row still has the
  * version the editor started from. If another tab or device saved first,
- * no row matches and we roll back, returning their version so the editor
- * can ask: reload theirs, or keep mine? The UPDATE also LOCKS the row until
- * COMMIT, so two saves at the same moment are handled one after the other:
- * the second re-checks the version after the first commits, and fails.
+ * no row matches, nothing changes, and we return their version so the
+ * editor can ask: reload theirs, or keep mine? The UPDATE also LOCKS the row
+ * until COMMIT, so two saves at the same instant go one after the other:
+ * the second re-checks the version once the first commits, and fails.
+ *
+ * ONE ROUND TRIP. The whole transaction is sent as one request (see
+ * sqlTransaction in lib/db.ts), so the "stop if the version didn't match"
+ * decision is made inside SQL. Statement 1 is a chain of DATA-MODIFYING
+ * CTEs (WITH ... AS (UPDATE/INSERT/DELETE ... RETURNING ...)): each step
+ * hands its RETURNING rows to the next, and every tag step starts from
+ * `saved`, the row the UPDATE returned. No matching row means no rows flow
+ * through, so the tags are left alone.
  */
 export async function saveNote(ownerId: string, input: SaveNoteInput): Promise<SaveOutcome> {
-  return withTransaction<SaveOutcome>(async (tx, rollback) => {
-    const updated = await tx.query(
-      `UPDATE notes
-          SET title = $1, body = $2, version = version + 1
-        WHERE id = $3 AND owner_id = $4 AND version = $5 AND deleted_at IS NULL
-        RETURNING version, updated_at AS "updatedAt", archived`,
-      [input.title, input.body, input.id, ownerId, input.expectedVersion],
-    )
-    const [saved] = parseRows(SavedRowSchema, updated.rows, 'saveNote UPDATE')
+  const [savedRows] = await sqlTransaction((tx) => [
+    tx`
+      WITH saved AS (
+        -- 1. The note itself, only if the version still matches. The
+        --    trigger sets updated_at; RETURNING shows the row as stored.
+        UPDATE notes
+           SET title = ${input.title}, body = ${input.body}, version = version + 1
+         WHERE id = ${input.id} AND owner_id = ${ownerId}
+           AND version = ${input.expectedVersion} AND deleted_at IS NULL
+        RETURNING id, version, updated_at, archived
+      ),
+      wanted AS (
+        -- The tag names from the editor, one row each (unnest turns the
+        -- text[] parameter into rows), but only if the UPDATE matched.
+        SELECT unnest(${input.tags}::text[]) AS name
+        WHERE EXISTS (SELECT 1 FROM saved)
+      ),
+      created AS (
+        -- 2. New tags. ON CONFLICT DO NOTHING relies on UNIQUE (owner_id,
+        --    name): tags that already exist are skipped, not duplicated.
+        INSERT INTO tags (owner_id, name)
+        SELECT ${ownerId}, name FROM wanted
+        ON CONFLICT (owner_id, name) DO NOTHING
+        RETURNING id
+      ),
+      wanted_ids AS (
+        -- Every wanted tag's id: the ones that existed, plus the new ones.
+        SELECT t.id FROM tags t JOIN wanted w ON w.name = t.name WHERE t.owner_id = ${ownerId}
+        UNION
+        SELECT id FROM created
+      ),
+      removed AS (
+        -- 3. Unlink tags that are no longer on the note.
+        DELETE FROM note_tags
+         WHERE note_id IN (SELECT id FROM saved)
+           AND tag_id NOT IN (SELECT id FROM wanted_ids)
+        RETURNING tag_id
+      ),
+      added AS (
+        -- 4. Link the wanted tags (existing links are skipped).
+        INSERT INTO note_tags (note_id, tag_id)
+        SELECT saved.id, wanted_ids.id FROM saved CROSS JOIN wanted_ids
+        ON CONFLICT DO NOTHING
+        RETURNING tag_id
+      )
+      SELECT
+        saved.version,
+        saved.updated_at AS "updatedAt",
+        saved.archived,
+        ((SELECT count(*) FROM removed) + (SELECT count(*) FROM added))::int AS "tagLinksChanged"
+      FROM saved
+    `,
+    // 5. Tags whose last link was just removed are deleted. A separate
+    //    statement on purpose: every part of statement 1 sees the database
+    //    as it was when that statement STARTED, so it can't see its own
+    //    deletions. This one runs after it, in the same transaction.
+    tx.query(DELETE_ORPHAN_TAGS, [ownerId]),
+  ])
 
-    if (!saved) {
-      // No row matched: find out why, then undo the (empty) transaction.
-      const current = await getNoteInTransaction(tx, ownerId, input.id)
-      return rollback(current && current.deletedAt === null ? { status: 'conflict', server: current } : { status: 'gone' })
-    }
+  const [saved] = parseRows(SavedRowSchema, savedRows ?? [], 'saveNote')
+  if (saved) {
+    const { tagLinksChanged, ...row } = saved
+    return { status: 'saved', ...row, tagsChanged: tagLinksChanged > 0 }
+  }
 
-    // 1. Make sure every tag exists. ON CONFLICT DO NOTHING is an "upsert"
-    //    that relies on UNIQUE (owner_id, name): existing tags are skipped.
-    //    unnest() turns the text[] parameter into one row per name.
-    await tx.query(
-      `INSERT INTO tags (owner_id, name)
-       SELECT $1, unnest($2::text[])
-       ON CONFLICT (owner_id, name) DO NOTHING`,
-      [ownerId, input.tags],
-    )
-
-    // 2. Unlink tags that are no longer on the note.
-    const removed = await tx.query(
-      `DELETE FROM note_tags nt
-        USING tags t
-        WHERE nt.note_id = $1 AND t.id = nt.tag_id AND NOT (t.name = ANY($2::text[]))`,
-      [input.id, input.tags],
-    )
-
-    // 3. Link the ones that are new (existing links are skipped).
-    const added = await tx.query(
-      `INSERT INTO note_tags (note_id, tag_id)
-       SELECT $1, t.id FROM tags t WHERE t.owner_id = $2 AND t.name = ANY($3::text[])
-       ON CONFLICT DO NOTHING`,
-      [input.id, ownerId, input.tags],
-    )
-
-    // 4. A tag whose last link was just removed is deleted too.
-    if (removed.rowCount) await tx.query(DELETE_ORPHAN_TAGS, [ownerId])
-
-    return { status: 'saved', ...saved, tagsChanged: Boolean(removed.rowCount) || Boolean(added.rowCount) }
-  })
+  // No row matched, and nothing was changed. Find out why.
+  const current = await getNote(ownerId, input.id)
+  return current && current.deletedAt === null ? { status: 'conflict', server: current } : { status: 'gone' }
 }
 
 const FlagRowSchema = z.object({ id: z.uuid(), archived: z.boolean() })
