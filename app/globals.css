@@ -1,26 +1,243 @@
 @import "tailwindcss";
 
-:root {
-  --background: #ffffff;
-  --foreground: #171717;
-}
+/*
+ * ÌRÁNTÍ DESIGN TOKENS: palette "adire indigo ink on paper".
+ *
+ * Adire is Yoruba resist-dyed cloth: deep indigo on undyed cotton. A notes
+ * app is ink on paper. So:
+ *   - PAPER, a warm off-white, is the page (and the text in dark mode).
+ *   - INDIGO, deep adire blue, is the ink: text, headings and buttons.
+ *   - LIME, a highlighter, is the one accent, used sparingly: the pinned
+ *     marker, search-match highlights and the keyboard focus halo. It only
+ *     ever sits BEHIND indigo text, never as text on paper, where it would
+ *     be unreadable.
+ * By night the page is deep indigo-black, the text is soft paper colour and
+ * the lime stays the same.
+ *
+ * No orange, peach or tangerine anywhere: errors use a cool crimson.
+ * `npm run check:contrast` checks every text/background pair below in both
+ * themes.
+ *
+ * Every colour is defined ONCE, holding both values in light-dark(light,
+ * dark). The browser picks one from the page's `color-scheme`, which the
+ * theme toggle sets through data-theme, so components need no `dark:`
+ * classes for colour.
+ */
 
-@theme inline {
-  --color-background: var(--background);
-  --color-foreground: var(--foreground);
-  --font-sans: var(--font-geist-sans);
-  --font-mono: var(--font-geist-mono);
-}
+/* `--color-*: initial` removes Tailwind's default palette, so an off-brand
+   `bg-orange-500` simply doesn't exist. */
+@theme {
+  --color-*: initial;
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
+  /* Surfaces: page, raised (editor sheet, cards), sunken (inputs, wells). */
+  --color-paper: light-dark(#f5f0e5, #0c0e1b);
+  --color-raised: light-dark(#fcf9f2, #13162a);
+  --color-sunken: light-dark(#ece5d5, #080a14);
+  --color-line: light-dark(#ddd3bf, #252a4a);
+  /* Borders that must be SEEN (inputs, buttons): 3:1 against the page. */
+  --color-line-strong: light-dark(#857b68, #6a70a0);
+
+  /* Ink: deep adire indigo on paper; paper-coloured on indigo-black. */
+  --color-ink: light-dark(#18204c, #ece6d6);
+  --color-muted: light-dark(#4a507a, #aeb2cf);
+
+  /* The indigo of buttons and the selected note. `on-indigo` is text on it.
+     In dark mode the button turns pale indigo with dark text. */
+  --color-indigo: light-dark(#222c6e, #c3c8f2);
+  --color-indigo-hover: light-dark(#18205a, #dadef9);
+  --color-on-indigo: light-dark(#fbf8f1, #0c0e1b);
+  --color-indigo-soft: light-dark(#e2e1ef, #1e2348);
+
+  /* The highlighter. Same in both themes; text on it is always dark ink. */
+  --color-lime: #c8f03e;
+  --color-on-lime: #121836;
+
+  /* Errors: a cool crimson (never orange), always with an icon and words. */
+  --color-danger: light-dark(#a1203a, #ff9db0);
+  --color-danger-hover: light-dark(#86182f, #ffbcc8);
+  --color-on-danger: light-dark(#ffffff, #2a0710);
+  --color-danger-soft: light-dark(#f6dde1, #3a1422);
+
+  /* Focus: an indigo ring with a lime halo by day; a lime ring by night. */
+  --color-focus: light-dark(#222c6e, #c8f03e);
+  /* The halo between ring and control: lime by day; none by night, where the
+     ring itself is lime. */
+  --color-focus-halo: light-dark(#c8f03e, #0c0e1b);
+
+  --color-white: #ffffff;
+  --color-transparent: transparent;
+  --color-current: currentColor;
+
+  /* Typography (variables from next/font in app/layout.tsx).
+     Young Serif, a warm, round-shouldered serif, for headings and the wordmark.
+     Literata, made for long reading on screens, for note text and the UI. */
+  --font-display: var(--font-young-serif), var(--font-literata), Georgia, "Times New Roman", serif;
+  --font-sans: var(--font-literata), Georgia, "Times New Roman", serif;
+
+  --radius-control: 0.625rem;
+  --radius-sheet: 1rem;
+  --radius-pill: 999px;
+
+  /* Shadows tinted indigo rather than grey. */
+  --shadow-sheet: 0 1px 2px rgb(24 32 76 / 0.06), 0 12px 32px -18px rgb(24 32 76 / 0.28);
+  --shadow-pop: 0 18px 40px -16px rgb(10 14 40 / 0.45);
+
+  --container-reading: 42rem;
+
+  --animate-rise: rise 0.3s cubic-bezier(0.2, 0.8, 0.2, 1) both;
+  --animate-shimmer: shimmer 1.4s linear infinite;
+
+  @keyframes rise {
+    from {
+      opacity: 0;
+      transform: translateY(6px);
+    }
+  }
+  @keyframes shimmer {
+    from {
+      background-position: 150% 0;
+    }
+    to {
+      background-position: -50% 0;
+    }
   }
 }
 
-body {
-  background: var(--background);
-  color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+/*
+ * THEME SWITCHING. `color-scheme` decides which side of light-dark() wins.
+ * - No attribute (no saved choice, or JavaScript off): follow the OS.
+ * - data-theme="light" | "dark": set before first paint by the inline script
+ *   in app/layout.tsx, so a saved choice never flashes the other theme.
+ */
+:root {
+  color-scheme: light dark;
+}
+:root[data-theme="light"] {
+  color-scheme: light;
+}
+:root[data-theme="dark"] {
+  color-scheme: dark;
+}
+
+@custom-variant dark (&:where([data-theme="dark"], [data-theme="dark"] *));
+
+@layer base {
+  html {
+    -webkit-text-size-adjust: 100%;
+  }
+
+  body {
+    background-color: var(--color-paper);
+    color: var(--color-ink);
+    font-family: var(--font-sans);
+    overflow-wrap: break-word;
+  }
+
+  h1,
+  h2,
+  h3 {
+    font-family: var(--font-display);
+    /* Young Serif has one weight: never let the browser fake a bold. */
+    font-weight: 400;
+    font-synthesis-weight: none;
+    letter-spacing: -0.01em;
+    text-wrap: balance;
+  }
+
+  p {
+    text-wrap: pretty;
+  }
+
+  /* ONE focus style for keyboard users everywhere: a solid ring (3:1 or
+     more against every surface) plus a lime halo between it and the
+     control, like a highlighter stroke. */
+  :focus-visible {
+    outline: 2px solid var(--color-focus);
+    outline-offset: 3px;
+    box-shadow: 0 0 0 3px var(--color-focus-halo);
+  }
+  /* Text fields show focus on their own border instead (see .field). */
+  input:focus-visible,
+  textarea:focus-visible {
+    box-shadow: none;
+  }
+
+  ::selection {
+    background-color: var(--color-lime);
+    color: var(--color-on-lime);
+  }
+
+  a {
+    text-underline-offset: 0.2em;
+  }
+
+  /* Search highlights from ts_headline: a highlighter stroke behind the word. */
+  mark {
+    background-color: var(--color-lime);
+    color: var(--color-on-lime);
+    border-radius: 0.2em;
+    padding: 0 0.12em;
+    box-decoration-break: clone;
+    -webkit-box-decoration-break: clone;
+  }
+
+  ::placeholder {
+    color: var(--color-muted);
+    opacity: 1;
+  }
+
+  dialog::backdrop {
+    background: rgb(8 10 20 / 0.55);
+  }
+}
+
+/* Inputs: a visible border, and a thick indigo/lime edge when focused. */
+@utility field {
+  background-color: var(--color-raised);
+  border: 1px solid var(--color-line-strong);
+  border-radius: var(--radius-control);
+  color: var(--color-ink);
+  &:focus-visible {
+    outline: 2px solid var(--color-focus);
+    outline-offset: 1px;
+    border-color: var(--color-focus);
+  }
+}
+
+/* Skeleton shimmer for loading states. */
+@utility skeleton {
+  background-image: linear-gradient(90deg, var(--color-sunken) 0%, var(--color-line) 50%, var(--color-sunken) 100%);
+  background-size: 200% 100%;
+  animation: var(--animate-shimmer);
+  border-radius: var(--radius-control);
+}
+
+/* A row of small dots, like the stitched resist lines of adire eleko cloth. */
+@utility adire-rule {
+  background-image: radial-gradient(circle, var(--color-line-strong) 1.1px, transparent 1.4px);
+  background-size: 9px 6px;
+  background-repeat: repeat-x;
+  background-position: left center;
+}
+
+/* Hide the scrollbar of the tag chip strip (it still scrolls by touch and keyboard). */
+@utility no-scrollbar {
+  scrollbar-width: none;
+  &::-webkit-scrollbar {
+    display: none;
+  }
+}
+
+/*
+ * REDUCED MOTION: people who ask their OS for less motion get none.
+ */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  ::before,
+  ::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
 }
