@@ -25,9 +25,11 @@ export function proxy(request: NextRequest) {
 
   const response =
     noteId !== null && !isUuid(noteId)
-      ? // A path no route matches: Next.js renders app/not-found.tsx with
-        // status 404, and the address bar keeps the original URL.
-        NextResponse.rewrite(new URL('/404', request.url))
+      ? // A path no route matches, so Next.js renders app/not-found.tsx and
+        // the address bar keeps the original URL. The status is set
+        // explicitly: on Vercel the prerendered 404 page is otherwise
+        // served with 200.
+        NextResponse.rewrite(new URL('/404', request.url), { status: 404 })
       : null
 
   if (isNotebookId(request.cookies.get(NOTEBOOK_COOKIE)?.value)) {
