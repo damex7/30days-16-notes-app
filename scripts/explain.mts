@@ -24,7 +24,7 @@ if (!connectionString) {
   process.exit(1)
 }
 
-const DEMO_OWNER_ID = '00000000-0000-4000-8000-000000000016'
+const SAMPLE_OWNER_ID = '00000000-0000-4000-8000-000000000016'
 const OTHER_OWNER_ID = '00000000-0000-4000-8000-0000000000aa'
 
 const LIST_QUERY = `
@@ -65,7 +65,7 @@ try {
 
   const { rows: count } = await client.query<{ n: number }>('SELECT count(*)::int AS n FROM notes')
   console.log(`== 1. Real data: ${count[0]?.n ?? 0} notes in the table ==`)
-  await explain('Main list, first page', LIST_QUERY, [DEMO_OWNER_ID])
+  await explain('Main list, first page', LIST_QUERY, [SAMPLE_OWNER_ID])
 
   // generate_series(1, N) makes N rows in one statement: a quick way to
   // fill a table for testing. Another owner gets most of them, so the
@@ -78,7 +78,7 @@ try {
                  ELSE 'Lecture notes on physics and chemistry, week ' || g END,
             now() - make_interval(mins => g)
      FROM generate_series(1, 5000) g`,
-    [DEMO_OWNER_ID],
+    [SAMPLE_OWNER_ID],
   )
   await client.query(
     `INSERT INTO notes (owner_id, title, body, updated_at)
@@ -98,26 +98,26 @@ try {
   await client.query("SELECT gin_clean_pending_list('notes_search_idx')")
 
   console.log('\n== 2. With 25,000 more notes (inside a transaction, rolled back below) ==')
-  await explain('Main list, first page', LIST_QUERY, [DEMO_OWNER_ID])
+  await explain('Main list, first page', LIST_QUERY, [SAMPLE_OWNER_ID])
 
   // A cursor from deep in the list: the 4,000th note.
   const { rows: deep } = await client.query<{ pinned: boolean; updated_at: Date; id: string }>(
     `SELECT pinned, updated_at, id FROM notes
      WHERE owner_id = $1 AND deleted_at IS NULL AND NOT archived
      ORDER BY pinned DESC, updated_at DESC, id DESC OFFSET 4000 LIMIT 1`,
-    [DEMO_OWNER_ID],
+    [SAMPLE_OWNER_ID],
   )
   const cursor = deep[0]
   if (cursor) {
-    await explain('"Load more" from the 4,000th note (keyset cursor)', NEXT_PAGE_QUERY, [DEMO_OWNER_ID, cursor.pinned, cursor.updated_at, cursor.id])
+    await explain('"Load more" from the 4,000th note (keyset cursor)', NEXT_PAGE_QUERY, [SAMPLE_OWNER_ID, cursor.pinned, cursor.updated_at, cursor.id])
     await explain(
       'The same page with OFFSET, for comparison',
       LIST_QUERY.replace('LIMIT 21', 'OFFSET 4000 LIMIT 21'),
-      [DEMO_OWNER_ID],
+      [SAMPLE_OWNER_ID],
     )
   }
-  await explain('Full-text search for "jollof" (11 matching notes out of 5,000+)', SEARCH_QUERY, [DEMO_OWNER_ID, 'jollof'])
-  await explain('The same search with LIKE, for comparison', SEARCH_QUERY.replace("n.search @@ q", "(n.title ILIKE '%' || $2 || '%' OR n.body ILIKE '%' || $2 || '%')").replace("ts_rank(n.search, q) DESC, ", ''), [DEMO_OWNER_ID, 'jollof'])
+  await explain('Full-text search for "jollof" (11 matching notes out of 5,000+)', SEARCH_QUERY, [SAMPLE_OWNER_ID, 'jollof'])
+  await explain('The same search with LIKE, for comparison', SEARCH_QUERY.replace("n.search @@ q", "(n.title ILIKE '%' || $2 || '%' OR n.body ILIKE '%' || $2 || '%')").replace("ts_rank(n.search, q) DESC, ", ''), [SAMPLE_OWNER_ID, 'jollof'])
 } finally {
   // Undo the 25,000 rows: the real data is exactly as it was.
   await client.query('ROLLBACK')

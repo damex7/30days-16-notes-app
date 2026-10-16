@@ -1,9 +1,12 @@
 // npm run db:seed
 //
-// Adds 12 sample notes (with tags) for the demo owner. SAFE TO RUN TWICE:
-// every note has a fixed id and every insert says ON CONFLICT ... DO
-// NOTHING, so a second run finds everything already there and adds nothing.
-// It never overwrites a sample note you have edited.
+// Fills the SAMPLE NOTEBOOK with 12 notes (with tags). Nobody owns it: each
+// browser gets its own empty notebook, and "Add the sample notes" copies
+// these into it (copySampleNotes in lib/notes.ts).
+//
+// SAFE TO RUN TWICE: every note has a fixed id and every insert says ON
+// CONFLICT ... DO NOTHING, so a second run finds everything already there
+// and adds nothing.
 //
 // Everything happens in ONE transaction: if any insert fails, none of the
 // sample data is left behind half-made.
@@ -20,9 +23,9 @@ if (!connectionString) {
   process.exit(1)
 }
 
-// Must match DEMO_OWNER_ID in lib/owner.ts. (Scripts run outside Next.js,
-// and lib/owner.ts is server-only, so the value is repeated here.)
-const DEMO_OWNER_ID = '00000000-0000-4000-8000-000000000016'
+// Must match SAMPLE_OWNER_ID in lib/notebook.ts. (Scripts run outside Next.js
+// and import nothing from the app, so the value is repeated here.)
+const SAMPLE_OWNER_ID = '00000000-0000-4000-8000-000000000016'
 
 type SeedNote = {
   n: number
@@ -237,20 +240,20 @@ try {
                now() - make_interval(hours => $8::int * 2),
                now() - make_interval(hours => $8::int))
        ON CONFLICT (id) DO NOTHING`,
-      [noteId(note.n), DEMO_OWNER_ID, note.title, note.body, note.pinned ?? false, note.archived ?? false, note.trashed ?? false, note.hoursAgo],
+      [noteId(note.n), SAMPLE_OWNER_ID, note.title, note.body, note.pinned ?? false, note.archived ?? false, note.trashed ?? false, note.hoursAgo],
     )
     insertedNotes += result.rowCount ?? 0
 
     await client.query(
       `INSERT INTO tags (owner_id, name) SELECT $1, unnest($2::text[])
        ON CONFLICT (owner_id, name) DO NOTHING`,
-      [DEMO_OWNER_ID, note.tags],
+      [SAMPLE_OWNER_ID, note.tags],
     )
     const links = await client.query(
       `INSERT INTO note_tags (note_id, tag_id)
        SELECT $1, id FROM tags WHERE owner_id = $2 AND name = ANY($3::text[])
        ON CONFLICT DO NOTHING`,
-      [noteId(note.n), DEMO_OWNER_ID, note.tags],
+      [noteId(note.n), SAMPLE_OWNER_ID, note.tags],
     )
     insertedLinks += links.rowCount ?? 0
   }
@@ -259,7 +262,7 @@ try {
   console.log(
     insertedNotes === 0
       ? 'Seed data is already there. Nothing added.'
-      : `Seeded ${insertedNotes} note(s) and ${insertedLinks} tag link(s) for the demo owner.`,
+      : `Seeded ${insertedNotes} note(s) and ${insertedLinks} tag link(s) into the sample notebook.`,
   )
 } catch (error) {
   await client.query('ROLLBACK')

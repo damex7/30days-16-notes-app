@@ -24,6 +24,7 @@ import { redirect } from 'next/navigation'
 import { z } from 'zod'
 import { cacheTags } from '@/lib/cache-tags'
 import {
+  copySampleNotes,
   createNote,
   deleteForever,
   emptyTrash,
@@ -52,6 +53,22 @@ export async function createNoteAction(): Promise<void> {
   const id = await createNote(ownerId)
   updateTag(cacheTags.list(ownerId))
   redirect(`/notes/${id}`)
+}
+
+/**
+ * "Add the sample notes": copies the sample notebook into this browser's
+ * empty notebook. It can add archived and trashed notes too, so every list
+ * is expired.
+ */
+export async function addSampleNotesAction(): Promise<void> {
+  const ownerId = await getOwnerId()
+  const copied = await copySampleNotes(ownerId)
+  if (copied > 0) {
+    updateTag(cacheTags.list(ownerId))
+    updateTag(cacheTags.archive(ownerId))
+    updateTag(cacheTags.trash(ownerId))
+    updateTag(cacheTags.tags(ownerId))
+  }
 }
 
 export type SaveResult =

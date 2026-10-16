@@ -2,6 +2,7 @@ import Link from 'next/link'
 import { Suspense } from 'react'
 import { NewNoteButton } from '@/components/notes/new-note-button'
 import { NoteList } from '@/components/notes/note-list'
+import { SampleNotesButton } from '@/components/notes/sample-notes-button'
 import { SearchBox, SearchBoxFallback } from '@/components/notes/search-box'
 import { TagFilter } from '@/components/notes/tag-filter'
 import { EmptyState } from '@/components/ui/empty-state'
@@ -84,9 +85,12 @@ async function NotesListSection({ searchParams, activeId }: { searchParams: Sear
             </p>
           </EmptyState>
         ) : (
-          <EmptyState icon="note" title="No notes yet">
-            <p>Write down the shopping list, the lecture, the idea in the shower. Ìrántí keeps it.</p>
-            <NewNoteButton withId={false} className="mt-4" />
+          <EmptyState icon="note" title="Your notebook is empty">
+            <p>Write down the shopping list, the lecture, the idea in the shower. Ìrántí keeps it, privately, in this browser.</p>
+            <div className="mt-4 flex flex-wrap justify-center gap-2">
+              <NewNoteButton withId={false} />
+              <SampleNotesButton />
+            </div>
           </EmptyState>
         )
       ) : (

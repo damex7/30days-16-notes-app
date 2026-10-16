@@ -19,15 +19,20 @@ export default function AboutPage() {
   return (
     <PageFrame title="About Ìrántí" intro={<p>Ìrántí means “remembrance” in Yoruba. It’s a calm place for notes worth keeping.</p>}>
       <div className="flex flex-col gap-8">
-        <section aria-labelledby="demo-heading" className="rounded-sheet border border-danger bg-danger-soft p-4 text-danger">
-          <h2 id="demo-heading" className="flex items-center gap-2 text-xl">
-            <Icon name="alert" />
-            A public demo: nothing private, please
+        <section aria-labelledby="notebook-heading" className="rounded-sheet border border-line-strong bg-raised p-4">
+          <h2 id="notebook-heading" className="flex items-center gap-2 text-xl">
+            <Icon name="note" />
+            Your notebook lives in this browser
           </h2>
           <p className="mt-2">
-            There are no accounts yet, so <strong>everyone who opens this site sees and edits the same notes</strong>. Don’t write passwords,
-            phone numbers, addresses or anything personal here. Accounts, and notes that are yours alone, come next.
+            There are no accounts yet. Instead, the first time you visit, this browser gets its own private notebook, remembered by a cookie.{' '}
+            <strong>Other visitors can’t see your notes, and you can’t see theirs.</strong>
           </p>
+          <ul className="mt-2 flex list-disc flex-col gap-1 pl-5 text-sm text-muted">
+            <li>Another browser, phone or private window starts a new, empty notebook.</li>
+            <li>Clearing this site’s cookies loses the way back to your notes. There is no password to recover them with.</li>
+            <li>It’s still a demo, so please don’t keep passwords or anything sensitive here. Accounts, with notes on every device, come next.</li>
+          </ul>
         </section>
 
         <section aria-labelledby="shortcuts-heading">

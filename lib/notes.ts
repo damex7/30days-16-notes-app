@@ -17,6 +17,7 @@ import { z } from 'zod'
 import { cacheTags } from '@/lib/cache-tags'
 import { decodeCursor, encodeCursor } from '@/lib/cursor'
 import { sql, sqlQuery, sqlTransaction } from '@/lib/db'
+import { SAMPLE_OWNER_ID } from '@/lib/notebook'
 import {
   MARK_END,
   MARK_START,
@@ -462,4 +463,62 @@ export async function emptyTrash(ownerId: string): Promise<number> {
     tx.query(DELETE_ORPHAN_TAGS, [ownerId]),
   ])
   return deleted?.length ?? 0
+}
+
+/**
+ * Copies the sample notebook (filled by `npm run db:seed`) into an EMPTY
+ * notebook: notes, tags and the links between them, with new ids. Returns
+ * how many notes were copied (0 if the notebook already had notes).
+ *
+ * - The new ids are made in a MATERIALIZED CTE, so each old id maps to one
+ *   new id that every later step sees the same way. The note_tags step
+ *   joins old links to those maps to link the NEW note to the NEW tag.
+ * - Timestamps are shifted so the newest sample note reads "just now".
+ * - pg_advisory_xact_lock makes two clicks at once (two tabs) take turns
+ *   until COMMIT. The second one then finds the notebook no longer empty
+ *   and copies nothing, so the samples never appear twice.
+ */
+export async function copySampleNotes(ownerId: string): Promise<number> {
+  const [, copied] = await sqlTransaction((tx) => [
+    tx`SELECT pg_advisory_xact_lock(hashtextextended(${ownerId}, 0))`,
+    tx`
+      WITH empty AS (
+        SELECT NOT EXISTS (SELECT 1 FROM notes WHERE owner_id = ${ownerId})
+           AND NOT EXISTS (SELECT 1 FROM tags WHERE owner_id = ${ownerId}) AS yes
+      ),
+      shift AS (
+        SELECT now() - max(updated_at) AS by FROM notes WHERE owner_id = ${SAMPLE_OWNER_ID}
+      ),
+      note_map AS MATERIALIZED (
+        SELECT n.id AS old_id, gen_random_uuid() AS new_id
+        FROM notes n, empty WHERE n.owner_id = ${SAMPLE_OWNER_ID} AND empty.yes
+      ),
+      tag_map AS MATERIALIZED (
+        SELECT t.id AS old_id, gen_random_uuid() AS new_id, t.name
+        FROM tags t, empty WHERE t.owner_id = ${SAMPLE_OWNER_ID} AND empty.yes
+      ),
+      new_notes AS (
+        INSERT INTO notes (id, owner_id, title, body, pinned, archived, deleted_at, created_at, updated_at)
+        SELECT m.new_id, ${ownerId}, n.title, n.body, n.pinned, n.archived,
+               n.deleted_at + shift.by, n.created_at + shift.by, n.updated_at + shift.by
+        FROM note_map m JOIN notes n ON n.id = m.old_id CROSS JOIN shift
+        RETURNING id
+      ),
+      new_tags AS (
+        INSERT INTO tags (id, owner_id, name)
+        SELECT new_id, ${ownerId}, name FROM tag_map
+        RETURNING id
+      ),
+      new_links AS (
+        INSERT INTO note_tags (note_id, tag_id)
+        SELECT nm.new_id, tm.new_id
+        FROM note_tags nt
+        JOIN note_map nm ON nm.old_id = nt.note_id
+        JOIN tag_map tm ON tm.old_id = nt.tag_id
+        RETURNING note_id
+      )
+      SELECT (SELECT count(*) FROM new_notes)::int AS notes
+    `,
+  ])
+  return z.array(z.object({ notes: z.number().int() })).parse(copied)[0]?.notes ?? 0
 }
