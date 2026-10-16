@@ -2,7 +2,7 @@
 
 **Ìrántí** ("remembrance" in Yoruba) is a calm notes app with pinned notes, tags, full-text search, archive and trash. It autosaves while you type and never silently overwrites a note that changed in another tab. It is Day 16 of my 30-day dev challenge, and the day's subject is **Next.js + PostgreSQL**. On Days 12–15 every page read typed seed data through `lib/data.ts`. Here, that module is replaced by plain SQL against a real PostgreSQL database on Neon, with no ORM yet (that comes on Day 30), so I can see exactly what an ORM would be doing for me.
 
-> **Public demo.** There are no accounts yet (Day 17), so everyone who opens the site shares the same notes. Don't write anything private in it.
+> **Your notes stay in your browser.** There are no accounts yet (Day 17). Instead, each browser gets its own private notebook, remembered by a cookie: other visitors can't see your notes, and you can't see theirs. Clearing the site's cookies loses the way back to them, so it's still a demo: don't keep anything sensitive in it.
 
 ## What it does
 
@@ -12,6 +12,7 @@
 - **Delete** moves a note to **/trash** (a soft delete). From there you can restore it, delete it forever, or empty the whole trash.
 - **Tags:** add and remove them in the editor, filter the list by tag, and see note counts per tag on **/tags**. A tag disappears when its last note lets go of it.
 - **Search** uses PostgreSQL's own full-text search, with the matched words highlighted. The query lives in the URL (`/?q=jollof`), so you can share a search and it survives a refresh.
+- **Private notebooks:** each browser gets its own notebook. An empty one can start from a copy of the sample notes.
 - **Layout:** light and dark themes with no flash, keyboard shortcuts (`n` for a new note, `/` to search), and support down to 360 px. On phones the list and the editor are separate screens; on wide screens they sit side by side.
 
 ## Stack
@@ -27,7 +28,7 @@ Next.js 16.4 (App Router, Cache Components) · TypeScript (strict, with `noUnche
    ```bash
    npm install
    npm run db:migrate   # creates the tables (safe to run again: it skips applied files)
-   npm run db:seed      # 12 sample notes with tags (safe to run again: it adds only what's missing)
+   npm run db:seed      # fills the sample notebook with 12 notes (safe to run again: it adds only what's missing)
    npm run dev          # http://localhost:3000
    ```
 
@@ -283,6 +284,7 @@ After a write, each Server Action calls **`updateTag`** on only the tags that wr
 | Archive / unarchive | `notes:{owner}` · `archive:{owner}` |
 | Move to trash / restore | `notes:` or `archive:{owner}` · `trash:{owner}` · `tags:{owner}` (counts skip trashed notes) |
 | Delete forever / empty trash | `trash:{owner}` · `tags:{owner}` |
+| Add the sample notes | `notes:` · `archive:` · `trash:` · `tags:{owner}` (it can add to every list) |
 | Load more | nothing (it's a read) |
 
 **Why `updateTag`** and not the alternatives:
@@ -292,13 +294,22 @@ After a write, each Server Action calls **`updateTag`** on only the tags that wr
 
 The build never queries the database: `getOwnerId()` calls `connection()`, which marks everything after it as request-time work. The static shell (header, search box, skeletons) is prerendered, and the notes stream in.
 
-## No accounts yet, but every row has an owner
+## No accounts yet: one private notebook per browser
 
-Every row has an `owner_id`, every query filters on it, and Server Actions never accept an owner from the browser. Today [`lib/owner.ts`](lib/owner.ts) returns one fixed demo owner, `00000000-0000-4000-8000-000000000016`. On Day 17 only the body of `getOwnerId()` changes, to read the signed-in user from the session cookie. Every query, action and page stays as it is, and a migration adds a `users` table and turns `owner_id` into a foreign key.
+Every row has an `owner_id`, every query filters on it, and Server Actions never accept an owner from the browser. That made separate notebooks a small change, because only *where the owner id comes from* had to change:
+
+1. **[`proxy.ts`](proxy.ts)** runs before every page. On a browser's first visit there's no `iranti-notebook` cookie, so it makes a random UUID and sets it twice: on the *request*, so the very first render already knows whose notebook it is, and on the *response*, so the browser keeps it for 400 days. The cookie is `httpOnly` (page JavaScript can't read or steal it), `secure` in production, and `sameSite=lax` (another site can't make a request that uses it to change your notes).
+2. **[`lib/owner.ts`](lib/owner.ts)**: `getOwnerId()` reads that cookie with `cookies()`. Nothing else changed: no page, query or Server Action was edited.
+
+The cookie value *is* the key to the notebook, like a password nobody typed. A random UUID has 122 random bits, so nobody can guess someone else's. Notebooks are tied to the browser: a new browser, a phone or a private window starts empty, and clearing cookies loses the way back.
+
+**The sample notebook.** `npm run db:seed` fills a notebook that **no browser can own**. [`lib/notebook.ts`](lib/notebook.ts) rejects its id, so a cookie set to it by hand is simply replaced with a new one. An empty notebook offers **Add the sample notes**, which copies them over: `copySampleNotes` in [`lib/notes.ts`](lib/notes.ts) is one transaction in which `MATERIALIZED` CTEs give every sample note and tag a new id, and the links are rebuilt between the *new* ids. Timestamps are shifted so the newest sample reads "just now". It starts with `pg_advisory_xact_lock`, so two tabs clicking at the same moment take turns: the second finds the notebook no longer empty and copies nothing.
+
+**On Day 17**, `getOwnerId()` reads the signed-in user's session instead. A migration adds a `users` table and turns `owner_id` into a foreign key, and signing up can *claim* the browser's notebook with one statement: `UPDATE notes SET owner_id = <new user> WHERE owner_id = <cookie id>`. Nobody who started writing before accounts existed loses their notes.
 
 ## 404s
 
-`/notes/hello` gets a real **404 status** from [`proxy.ts`](proxy.ts), which rejects anything that isn't a UUID before the page renders. PostgreSQL would reject `"hello"` as a uuid with an error, and a bad link deserves a 404, not an error page. A well-formed but unknown id needs the database to answer, which happens after the page's static shell has started streaming. That page shows the same not-found screen with a `noindex` tag, but keeps the 200 status, as the Next.js docs describe for `notFound()` after streaming starts.
+`/notes/hello` gets a real **404 status** from [`proxy.ts`](proxy.ts) (its second job), which rejects anything that isn't a UUID before the page renders. PostgreSQL would reject `"hello"` as a uuid with an error, and a bad link deserves a 404, not an error page. A well-formed but unknown id needs the database to answer, which happens after the page's static shell has started streaming. That page shows the same not-found screen with a `noindex` tag, but keeps the 200 status, as the Next.js docs describe for `notFound()` after streaming starts.
 
 ## Design: "adire indigo ink on paper"
 
@@ -355,6 +366,9 @@ Fraunces, Newsreader and Spectral passed the first check but failed the second: 
 | Keyset pagination | [`lib/notes.ts`](lib/notes.ts), [`lib/cursor.ts`](lib/cursor.ts), [`components/notes/note-list.tsx`](components/notes/note-list.tsx) | A row comparison against the last note's sort key; never OFFSET |
 | EXPLAIN ANALYZE | [`scripts/explain.mts`](scripts/explain.mts) | The real plan, rows and timings, on data rolled back afterwards |
 | Owner on every row | [`lib/owner.ts`](lib/owner.ts) | One function decides whose data it is; Day 17 swaps its body |
+| A notebook per browser | [`proxy.ts`](proxy.ts), [`lib/notebook.ts`](lib/notebook.ts) | A random id in an httpOnly cookie, set on the request and the response |
+| Copying rows with new ids | [`lib/notes.ts`](lib/notes.ts) (`copySampleNotes`) | `MATERIALIZED` id-map CTEs rebuild the note–tag links between the copies |
+| Advisory lock | [`lib/notes.ts`](lib/notes.ts), [`scripts/migrate.mts`](scripts/migrate.mts) | `pg_advisory_xact_lock` makes two requests take turns until COMMIT |
 | `server-only` data layer | [`lib/db.ts`](lib/db.ts), [`lib/notes.ts`](lib/notes.ts) | Importing it from a Client Component is a build error |
 | Cache tags + `updateTag` | [`lib/cache-tags.ts`](lib/cache-tags.ts), [`app/(app)/actions.ts`](app/(app)/actions.ts) | Each write expires only the cached reads it changed |
 | Debounced autosave | [`components/notes/note-editor.tsx`](components/notes/note-editor.tsx) | Save 800 ms after the last key, one save in flight, retry with backoff |
@@ -366,7 +380,8 @@ Fraunces, Newsreader and Spectral passed the first check but failed the second: 
 
 ## Worth adding later (not built today)
 
-- **Day 17 (accounts):** a `users` table, `owner_id` as a foreign key, and row-level security as a second safety net. Also composite foreign keys so a note can only be linked to its own owner's tags.
+- **Day 17 (accounts):** a `users` table, `owner_id` as a foreign key, and row-level security as a second safety net. Signing up claims the browser's notebook. Also composite foreign keys so a note can only be linked to its own owner's tags.
+- **Clean up abandoned notebooks:** notebooks whose cookie was cleared stay in the database forever. A scheduled job could delete notebooks untouched for a year.
 - **Auto-purge the trash:** delete notes trashed more than 30 days ago (a scheduled job or `pg_cron`).
 - **Note history:** keep each version in a `note_versions` table, so a conflict could show a diff instead of a choice.
 - **Live updates** between tabs (Postgres `LISTEN/NOTIFY` or polling), so the conflict rarely happens at all.
